@@ -1,0 +1,82 @@
+install.packages(c("tidyverse", "caret", "glmnet", "randomForest", "xgboost", "rpart", "plumber", "shiny"))
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(randomForest)
+library(xgboost)
+library(rpart)
+library(plumber)
+library(shiny)
+
+data <- read.csv("dataset.csv")
+data <- na.omit(data)
+data$ubicacion <- as.factor(data$ubicacion)
+
+set.seed(123)
+trainIndex <- createDataPartition(data$precio, p = 0.8, list = FALSE)
+trainData <- data[trainIndex, ]
+testData <- data[-trainIndex, ]
+
+modelo_lm <- lm(precio ~ ., data = trainData)
+modelo_lasso <- cv.glmnet(as.matrix(trainData[, -ncol(trainData)]), trainData$precio, alpha = 1)
+modelo_ridge <- cv.glmnet(as.matrix(trainData[, -ncol(trainData)]), trainData$precio, alpha = 0)
+modelo_tree <- rpart(precio ~ ., data = trainData)
+modelo_rf <- randomForest(precio ~ ., data = trainData)
+modelo_gb <- xgboost(data = as.matrix(trainData[, -ncol(trainData)]), label = trainData$precio, nrounds = 100)
+
+predicciones_lm <- predict(modelo_lm, newdata = testData)
+predicciones_lasso <- predict(modelo_lasso, newx = as.matrix(testData[, -ncol(testData)]))
+predicciones_ridge <- predict(modelo_ridge, newx = as.matrix(testData[, -ncol(testData)]))
+predicciones_tree <- predict(modelo_tree, newdata = testData)
+predicciones_rf <- predict(modelo_rf, newdata = testData)
+predicciones_gb <- predict(modelo_gb, newdata = as.matrix(testData[, -ncol(testData)]))
+
+mse_lm <- mean((predicciones_lm - testData$precio)^2)
+mse_lasso <- mean((predicciones_lasso - testData$precio)^2)
+mse_ridge <- mean((predicciones_ridge - testData$precio)^2)
+mse_tree <- mean((predicciones_tree - testData$precio)^2)
+mse_rf <- mean((predicciones_rf - testData$precio)^2)
+mse_gb <- mean((predicciones_gb - testData$precio)^2)
+
+r2_lm <- summary(modelo_lm)$r.squared
+r2_rf <- 1 - sum((predicciones_rf - testData$precio)^2) / sum((mean(testData$precio) - testData$precio)^2)
+
+modelo_comparacion <- data.frame(
+  Modelo = c("Regresión Lineal", "LASSO", "Ridge", "Árbol de Decisión", "Random Forest", "Gradient Boosting"),
+  MSE = c(mse_lm, mse_lasso, mse_ridge, mse_tree, mse_rf, mse_gb),
+  R2 = c(r2_lm, NA, NA, NA, r2_rf, NA)
+)
+
+print(modelo_comparacion)
+
+predict_price <- function(superficie, habitaciones, ubicacion) {
+  input_data <- data.frame(superficie = superficie, habitaciones = habitaciones, ubicacion = as.factor(ubicacion))
+  prediction <- predict(modelo_rf, input_data)
+  return(prediction)
+}
+
+ui <- fluidPage(
+  titlePanel("Predicción de Precios de Bienes Raíces"),
+  sidebarLayout(
+    sidebarPanel(
+      numericInput("superficie", "Superficie (m²)", value = 100),
+      numericInput("habitaciones", "Número de Habitaciones", value = 3),
+      selectInput("ubicacion", "Ubicación", choices = levels(data$ubicacion)),
+      actionButton("predict", "Predecir Precio")
+    ),
+    mainPanel(
+      textOutput("prediccion")
+    )
+  )
+)
+
+server <- function(input, output) {
+  observeEvent(input$predict, {
+    prediccion <- predict_price(input$superficie, input$habitaciones, input$ubicacion)
+    output$prediccion <- renderText({
+      paste("El precio estimado es: $", round(prediccion, 2))
+    })
+  })
+}
+
+shinyApp(ui, server)
